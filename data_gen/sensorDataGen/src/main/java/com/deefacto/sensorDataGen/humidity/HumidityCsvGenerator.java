@@ -8,6 +8,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 public class HumidityCsvGenerator {
+    // 센서 정보 클래스 (타입, ID, 구역)
     private static class Sensor {
         String sensorType;
         String sensorId;
@@ -19,6 +20,7 @@ public class HumidityCsvGenerator {
         }
     }
 
+    // 시뮬레이션에 사용할 센서 목록 (zone별로 배치)
     private static final List<Sensor> SENSORS = Arrays.asList(
             new Sensor("humidity", "HUM-001", "A"),
             new Sensor("humidity", "HUM-002", "A"),
@@ -34,28 +36,29 @@ public class HumidityCsvGenerator {
             new Sensor("humidity", "HUM-012", "C")
     );
 
-    private static final double NORMAL_HUM = 45.0;
-    private static final double NORMAL_RANGE = 5.0;
-    private static final double OUT_RANGE = 7.0;
+    // 습도 시뮬레이션 파라미터 (정상값, 범위, 이상치 범위, 변화폭 등)
+    private static final double NORMAL_HUM = 45.0; // 정상 습도(%RH)
+    private static final double NORMAL_RANGE = 5.0; // 정상 허용 범위(±)
+    private static final double OUT_RANGE = 7.0; // 이상치 허용 범위(±)
     private static final double MIN_HUM = NORMAL_HUM - NORMAL_RANGE;
     private static final double MAX_HUM = NORMAL_HUM + NORMAL_RANGE;
     private static final double OUT_MIN = NORMAL_HUM - OUT_RANGE;
     private static final double OUT_MAX = NORMAL_HUM + OUT_RANGE;
-    private static final double DELTA = 0.5;
-    private static final double OUT_PROB = 0.001; // 0.1% 확률
+    private static final double DELTA = 0.5; // 정상 상태 변화폭
+    private static final double OUT_PROB = 0.001; // 0.1% 확률로 이상치 발생
     private static final int SECONDS = 3600; // 1시간치 데이터
     private static final double SENSOR_NOISE = 0.25; // 센서별 미세 노이즈 (±0.25%RH)
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     public static void main(String[] args) throws IOException {
-        // zone 목록 추출
+        // zone 목록 추출 (A, B, C)
         Set<String> zoneSet = new HashSet<>();
         for (Sensor s : SENSORS) zoneSet.add(s.zoneId);
         List<String> zones = new ArrayList<>(zoneSet);
         Collections.sort(zones);
 
-        // zone별 상태 및 온도 관리
+        // zone별 상태 및 습도 관리 객체
         class ZoneState {
             double humidity; // 현재 습도 값
             String state; // 현재 상태 (NORMAL, SPIKING, HOLDING, OUT_OF_RANGE)
@@ -79,11 +82,12 @@ public class HumidityCsvGenerator {
         Map<String, ZoneState> zoneStates = new HashMap<>();
         Random rand = new Random();
         for (String zone : zones) {
+            // zone별 초기 습도값을 정상범위 내에서 랜덤하게 설정
             double h0 = NORMAL_HUM + (rand.nextDouble() * 2 - 1) * NORMAL_RANGE;
             zoneStates.put(zone, new ZoneState(h0));
         }
 
-        // 센서별 파일 준비
+        // 센서별 파일 준비 및 헤더 작성
         String dataDir = "Data/humidity";
         java.io.File dir = new java.io.File(dataDir);
         if (!dir.exists()) dir.mkdirs();
@@ -95,13 +99,14 @@ public class HumidityCsvGenerator {
 
         LocalDateTime now = LocalDateTime.of(2025, 7, 15, 9, 32, 0);
         for (int i = 0; i < SECONDS; i++) {
-            // zone별 온도/상태 업데이트
+            // zone별 습도/상태 업데이트
             for (String zone : zones) {
                 ZoneState zs = zoneStates.get(zone);
                 switch (zs.state) {
                     case "NORMAL":
-                        
+                        // 정상 상태: 확률적으로 스파이크(이상치) 발생
                         if (rand.nextDouble() < OUT_PROB) {
+                            // 이상치 방향(상승/하강) 랜덤 결정
                             if (rand.nextBoolean()) {
                                 zs.spikeTargetHumidity = OUT_MIN + rand.nextDouble() * (MIN_HUM - OUT_MIN);
                             } else {
@@ -114,6 +119,7 @@ public class HumidityCsvGenerator {
                             zs.holdDuration = 25;
                             zs.state = "SPIKING";
                         } else {
+                            // 정상값으로 복원하려는 경향 + 랜덤 변화
                             double towardProb = 0.3;
                             boolean towardNormal = rand.nextDouble() < towardProb;
                             double delta = (rand.nextDouble() * 2 - 1) * DELTA;
@@ -129,11 +135,13 @@ public class HumidityCsvGenerator {
                             } else {
                                 zs.humidity += delta;
                             }
+                            // 정상 범위 밖으로 벗어나지 않도록 보정
                             if (zs.humidity < MIN_HUM) zs.humidity = MIN_HUM;
                             if (zs.humidity > MAX_HUM) zs.humidity = MAX_HUM;
                         }
                         break;
                     case "SPIKING":
+                        // 스파이크(이상치) 상태: exp 곡선으로 목표 습도까지 빠르게 이동
                         zs.spikeStep++;
                         double t = (double)zs.spikeStep / zs.spikeDuration;
                         double expFactor = 1 - Math.exp(-3 * t);
@@ -145,6 +153,7 @@ public class HumidityCsvGenerator {
                         }
                         break;
                     case "HOLDING":
+                        // HOLDING: 스파이크 목표값을 일정 시간 유지
                         zs.holdStep++;
                         zs.humidity = zs.spikeTargetHumidity;
                         if (zs.holdStep >= zs.holdDuration) {
@@ -152,6 +161,7 @@ public class HumidityCsvGenerator {
                         }
                         break;
                     case "OUT_OF_RANGE":
+                        // OUT_OF_RANGE: 정상 범위로 완만하게 복귀
                         double towardProb = 0.8;
                         boolean towardNormal;
                         double delta;
@@ -171,17 +181,18 @@ public class HumidityCsvGenerator {
                             }
                         }
                         zs.humidity += delta;
+                        // 정상 범위로 복귀하면 NORMAL 상태로 전환
                         if (zs.humidity >= MIN_HUM && zs.humidity <= MAX_HUM) {
                             zs.state = "NORMAL";
                         }
                         break;
                 }
             }
-            // 센서별 데이터 기록
+            // 센서별 데이터 기록 (zone 상태 + 센서 노이즈 적용)
             for (Sensor sensor : SENSORS) {
                 ZoneState zs = zoneStates.get(sensor.zoneId);
-                    double sensorHumidity = zs.humidity + (rand.nextDouble() * 2 - 1) * SENSOR_NOISE;
-                // 0.25도 단위로 반올림
+                double sensorHumidity = zs.humidity + (rand.nextDouble() * 2 - 1) * SENSOR_NOISE;
+                // 0.25% 단위로 반올림
                 double roundedHumidity = Math.round(sensorHumidity / 0.25) * 0.25;
                 String line = String.format("%s,humidity,%s,%%RH,%.2f\n",
                         now.plusSeconds(i).format(FORMATTER), sensor.sensorId, roundedHumidity);

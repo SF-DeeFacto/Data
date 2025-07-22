@@ -8,6 +8,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 public class TempCsvGenerator {
+    // 센서 정보 클래스 (타입, ID, 구역)
     private static class Sensor {
         String sensorType;
         String sensorId;
@@ -19,6 +20,7 @@ public class TempCsvGenerator {
         }
     }
 
+    // 시뮬레이션에 사용할 센서 목록 (zone별로 배치)
     private static final List<Sensor> SENSORS = Arrays.asList(
             new Sensor("temperature", "TEMP-001", "A"),
             new Sensor("temperature", "TEMP-002", "A"),
@@ -34,37 +36,38 @@ public class TempCsvGenerator {
             new Sensor("temperature", "TEMP-012", "C")
     );
 
-    private static final double NORMAL_TEMP = 21.0;
-    private static final double NORMAL_RANGE = 1.0;
-    private static final double OUT_RANGE = 3.0;
+    // 온도 시뮬레이션 파라미터 (정상값, 범위, 이상치 범위, 변화폭 등)
+    private static final double NORMAL_TEMP = 21.0; // 정상 온도(°C)
+    private static final double NORMAL_RANGE = 1.0; // 정상 허용 범위(±)
+    private static final double OUT_RANGE = 3.0; // 이상치 허용 범위(±)
     private static final double MIN_TEMP = NORMAL_TEMP - NORMAL_RANGE;
     private static final double MAX_TEMP = NORMAL_TEMP + NORMAL_RANGE;
     private static final double OUT_MIN = NORMAL_TEMP - OUT_RANGE;
     private static final double OUT_MAX = NORMAL_TEMP + OUT_RANGE;
-    private static final double DELTA = 0.1;
-    private static final double OUT_PROB = 0.01; // 1% 확률
+    private static final double DELTA = 0.1; // 정상 상태 변화폭
+    private static final double OUT_PROB = 0.01; // 1% 확률로 이상치 발생
     private static final int SECONDS = 3600; // 1시간치 데이터
     private static final double SENSOR_NOISE = 0.25; // 센서별 미세 노이즈 (±0.25°C)
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
     public static void main(String[] args) throws IOException {
-        // zone 목록 추출
+        // zone 목록 추출 (A, B, C)
         Set<String> zoneSet = new HashSet<>();
         for (Sensor s : SENSORS) zoneSet.add(s.zoneId);
         List<String> zones = new ArrayList<>(zoneSet);
         Collections.sort(zones);
 
-        // zone별 상태 및 온도 관리
+        // zone별 상태 및 온도 관리 객체
         class ZoneState {
-            double temp;
-            String state; // NORMAL, SPIKING, HOLDING, OUT_OF_RANGE
-            int spikeStep;
-            int spikeDuration;
-            double spikeStartTemp;
-            double spikeTargetTemp;
-            int holdStep;
-            int holdDuration;
+            double temp; // 현재 온도 값
+            String state; // 현재 상태 (NORMAL, SPIKING, HOLDING, OUT_OF_RANGE)
+            int spikeStep; // 스파이크 단계(진행 중인 step)
+            int spikeDuration; // 스파이크가 지속되는 총 step 수
+            double spikeStartTemp; // 스파이크 시작 시 온도
+            double spikeTargetTemp; // 스파이크 목표 온도
+            int holdStep; // HOLDING 상태에서 경과한 step
+            int holdDuration; // HOLDING 상태에서 유지할 step 수
             public ZoneState(double temp) {
                 this.temp = temp;
                 this.state = "NORMAL";
@@ -79,11 +82,12 @@ public class TempCsvGenerator {
         Map<String, ZoneState> zoneStates = new HashMap<>();
         Random rand = new Random();
         for (String zone : zones) {
+            // zone별 초기 온도값을 정상범위 내에서 랜덤하게 설정
             double t0 = NORMAL_TEMP + (rand.nextDouble() * 2 - 1) * NORMAL_RANGE;
             zoneStates.put(zone, new ZoneState(t0));
         }
 
-        // 센서별 파일 준비
+        // 센서별 파일 준비 및 헤더 작성
         String dataDir = "Data/temperature";
         java.io.File dir = new java.io.File(dataDir);
         if (!dir.exists()) dir.mkdirs();
@@ -100,7 +104,9 @@ public class TempCsvGenerator {
                 ZoneState zs = zoneStates.get(zone);
                 switch (zs.state) {
                     case "NORMAL":
+                        // 정상 상태: 확률적으로 스파이크(이상치) 발생
                         if (rand.nextDouble() < OUT_PROB) {
+                            // 이상치 방향(상승/하강) 랜덤 결정
                             if (rand.nextBoolean()) {
                                 zs.spikeTargetTemp = OUT_MIN + rand.nextDouble() * (MIN_TEMP - OUT_MIN);
                             } else {
@@ -113,6 +119,7 @@ public class TempCsvGenerator {
                             zs.holdDuration = 25;
                             zs.state = "SPIKING";
                         } else {
+                            // 정상값으로 복원하려는 경향 + 랜덤 변화
                             double towardProb = 0.3;
                             boolean towardNormal = rand.nextDouble() < towardProb;
                             double delta = (rand.nextDouble() * 2 - 1) * DELTA;
@@ -128,11 +135,13 @@ public class TempCsvGenerator {
                             } else {
                                 zs.temp += delta;
                             }
+                            // 정상 범위 밖으로 벗어나지 않도록 보정
                             if (zs.temp < MIN_TEMP) zs.temp = MIN_TEMP;
                             if (zs.temp > MAX_TEMP) zs.temp = MAX_TEMP;
                         }
                         break;
                     case "SPIKING":
+                        // 스파이크(이상치) 상태: exp 곡선으로 목표 온도까지 빠르게 이동
                         zs.spikeStep++;
                         double t = (double)zs.spikeStep / zs.spikeDuration;
                         double expFactor = 1 - Math.exp(-3 * t);
@@ -144,6 +153,7 @@ public class TempCsvGenerator {
                         }
                         break;
                     case "HOLDING":
+                        // HOLDING: 스파이크 목표값을 일정 시간 유지
                         zs.holdStep++;
                         zs.temp = zs.spikeTargetTemp;
                         if (zs.holdStep >= zs.holdDuration) {
@@ -151,6 +161,7 @@ public class TempCsvGenerator {
                         }
                         break;
                     case "OUT_OF_RANGE":
+                        // OUT_OF_RANGE: 정상 범위로 완만하게 복귀
                         double towardProb = 0.8;
                         boolean toward21;
                         double delta;
@@ -170,13 +181,14 @@ public class TempCsvGenerator {
                             }
                         }
                         zs.temp += delta;
+                        // 정상 범위로 복귀하면 NORMAL 상태로 전환
                         if (zs.temp >= MIN_TEMP && zs.temp <= MAX_TEMP) {
                             zs.state = "NORMAL";
                         }
                         break;
                 }
             }
-            // 센서별 데이터 기록
+            // 센서별 데이터 기록 (zone 상태 + 센서 노이즈 적용)
             for (Sensor sensor : SENSORS) {
                 ZoneState zs = zoneStates.get(sensor.zoneId);
                 double sensorTemp = zs.temp + (rand.nextDouble() * 2 - 1) * SENSOR_NOISE;
