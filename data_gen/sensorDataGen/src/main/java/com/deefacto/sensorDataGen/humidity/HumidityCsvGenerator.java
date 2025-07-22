@@ -1,4 +1,4 @@
-package com.deefacto.sensorDataGen.temperature;
+package com.deefacto.sensorDataGen.humidity;
 
 import java.io.FileWriter;
 import java.io.IOException;
@@ -7,7 +7,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
-public class TempCsvGenerator {
+public class HumidityCsvGenerator {
     private static class Sensor {
         String sensorType;
         String sensorId;
@@ -20,31 +20,31 @@ public class TempCsvGenerator {
     }
 
     private static final List<Sensor> SENSORS = Arrays.asList(
-            new Sensor("temperature", "TEMP-001", "A"),
-            new Sensor("temperature", "TEMP-002", "A"),
-            new Sensor("temperature", "TEMP-003", "A"),
-            new Sensor("temperature", "TEMP-004", "A"),
-            new Sensor("temperature", "TEMP-005", "B"),
-            new Sensor("temperature", "TEMP-006", "B"),
-            new Sensor("temperature", "TEMP-007", "B"),
-            new Sensor("temperature", "TEMP-008", "B"),
-            new Sensor("temperature", "TEMP-009", "C"),
-            new Sensor("temperature", "TEMP-010", "C"),
-            new Sensor("temperature", "TEMP-011", "C"),
-            new Sensor("temperature", "TEMP-012", "C")
+            new Sensor("humidity", "HUM-001", "A"),
+            new Sensor("humidity", "HUM-002", "A"),
+            new Sensor("humidity", "HUM-003", "A"),
+            new Sensor("humidity", "HUM-004", "A"),
+            new Sensor("humidity", "HUM-005", "B"),
+            new Sensor("humidity", "HUM-006", "B"),
+            new Sensor("humidity", "HUM-007", "B"),
+            new Sensor("humidity", "HUM-008", "B"),
+            new Sensor("humidity", "HUM-009", "B"),
+            new Sensor("humidity", "HUM-010", "B"),
+            new Sensor("humidity", "HUM-011", "C"),
+            new Sensor("humidity", "HUM-012", "C")
     );
 
-    private static final double NORMAL_TEMP = 21.0;
-    private static final double NORMAL_RANGE = 1.0;
-    private static final double OUT_RANGE = 3.0;
-    private static final double MIN_TEMP = NORMAL_TEMP - NORMAL_RANGE;
-    private static final double MAX_TEMP = NORMAL_TEMP + NORMAL_RANGE;
-    private static final double OUT_MIN = NORMAL_TEMP - OUT_RANGE;
-    private static final double OUT_MAX = NORMAL_TEMP + OUT_RANGE;
-    private static final double DELTA = 0.1;
-    private static final double OUT_PROB = 0.01; // 1% 확률
+    private static final double NORMAL_HUM = 45.0;
+    private static final double NORMAL_RANGE = 5.0;
+    private static final double OUT_RANGE = 7.0;
+    private static final double MIN_HUM = NORMAL_HUM - NORMAL_RANGE;
+    private static final double MAX_HUM = NORMAL_HUM + NORMAL_RANGE;
+    private static final double OUT_MIN = NORMAL_HUM - OUT_RANGE;
+    private static final double OUT_MAX = NORMAL_HUM + OUT_RANGE;
+    private static final double DELTA = 0.5;
+    private static final double OUT_PROB = 0.001; // 0.1% 확률
     private static final int SECONDS = 3600; // 1시간치 데이터
-    private static final double SENSOR_NOISE = 0.25; // 센서별 미세 노이즈 (±0.25°C)
+    private static final double SENSOR_NOISE = 0.25; // 센서별 미세 노이즈 (±0.25%RH)
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
@@ -57,21 +57,21 @@ public class TempCsvGenerator {
 
         // zone별 상태 및 온도 관리
         class ZoneState {
-            double temp;
-            String state; // NORMAL, SPIKING, HOLDING, OUT_OF_RANGE
-            int spikeStep;
-            int spikeDuration;
-            double spikeStartTemp;
-            double spikeTargetTemp;
-            int holdStep;
-            int holdDuration;
-            public ZoneState(double temp) {
-                this.temp = temp;
+            double humidity; // 현재 습도 값
+            String state; // 현재 상태 (NORMAL, SPIKING, HOLDING, OUT_OF_RANGE)
+            int spikeStep; // 스파이크 단계(진행 중인 step)
+            int spikeDuration; // 스파이크가 지속되는 총 step 수
+            double spikeStartHumidity; // 스파이크 시작 시 습도
+            double spikeTargetHumidity; // 스파이크 목표 습도
+            int holdStep; // HOLDING 상태에서 경과한 step
+            int holdDuration; // HOLDING 상태에서 유지할 step 수
+            public ZoneState(double humidity) {
+                this.humidity = humidity;
                 this.state = "NORMAL";
                 this.spikeStep = 0;
                 this.spikeDuration = 10;
-                this.spikeStartTemp = temp;
-                this.spikeTargetTemp = temp;
+                this.spikeStartHumidity = humidity;
+                this.spikeTargetHumidity = humidity;
                 this.holdStep = 0;
                 this.holdDuration = 25;
             }
@@ -79,12 +79,12 @@ public class TempCsvGenerator {
         Map<String, ZoneState> zoneStates = new HashMap<>();
         Random rand = new Random();
         for (String zone : zones) {
-            double t0 = NORMAL_TEMP + (rand.nextDouble() * 2 - 1) * NORMAL_RANGE;
-            zoneStates.put(zone, new ZoneState(t0));
+            double h0 = NORMAL_HUM + (rand.nextDouble() * 2 - 1) * NORMAL_RANGE;
+            zoneStates.put(zone, new ZoneState(h0));
         }
 
         // 센서별 파일 준비
-        String dataDir = "Data/temperature";
+        String dataDir = "Data/humidity";
         java.io.File dir = new java.io.File(dataDir);
         if (!dir.exists()) dir.mkdirs();
         Map<String, FileWriter> writers = new HashMap<>();
@@ -100,13 +100,14 @@ public class TempCsvGenerator {
                 ZoneState zs = zoneStates.get(zone);
                 switch (zs.state) {
                     case "NORMAL":
+                        
                         if (rand.nextDouble() < OUT_PROB) {
                             if (rand.nextBoolean()) {
-                                zs.spikeTargetTemp = OUT_MIN + rand.nextDouble() * (MIN_TEMP - OUT_MIN);
+                                zs.spikeTargetHumidity = OUT_MIN + rand.nextDouble() * (MIN_HUM - OUT_MIN);
                             } else {
-                                zs.spikeTargetTemp = MAX_TEMP + rand.nextDouble() * (OUT_MAX - MAX_TEMP);
+                                zs.spikeTargetHumidity = MAX_HUM + rand.nextDouble() * (OUT_MAX - MAX_HUM);
                             }
-                            zs.spikeStartTemp = zs.temp;
+                            zs.spikeStartHumidity = zs.humidity;
                             zs.spikeStep = 0;
                             zs.spikeDuration = 10;
                             zs.holdStep = 0;
@@ -120,16 +121,16 @@ public class TempCsvGenerator {
                                 if (delta < 0) {
                                     delta = -delta;
                                 }
-                                if (zs.temp < NORMAL_TEMP) {
-                                    zs.temp += delta;
+                                if (zs.humidity < NORMAL_HUM) {
+                                    zs.humidity += delta;
                                 } else {
-                                    zs.temp -= delta;
+                                    zs.humidity -= delta;
                                 }
                             } else {
-                                zs.temp += delta;
+                                zs.humidity += delta;
                             }
-                            if (zs.temp < MIN_TEMP) zs.temp = MIN_TEMP;
-                            if (zs.temp > MAX_TEMP) zs.temp = MAX_TEMP;
+                            if (zs.humidity < MIN_HUM) zs.humidity = MIN_HUM;
+                            if (zs.humidity > MAX_HUM) zs.humidity = MAX_HUM;
                         }
                         break;
                     case "SPIKING":
@@ -137,7 +138,7 @@ public class TempCsvGenerator {
                         double t = (double)zs.spikeStep / zs.spikeDuration;
                         double expFactor = 1 - Math.exp(-3 * t);
                         double expNorm = 1 - Math.exp(-3);
-                        zs.temp = zs.spikeStartTemp + (zs.spikeTargetTemp - zs.spikeStartTemp) * (expFactor / expNorm);
+                        zs.humidity = zs.spikeStartHumidity + (zs.spikeTargetHumidity - zs.spikeStartHumidity) * (expFactor / expNorm);
                         if (zs.spikeStep >= zs.spikeDuration) {
                             zs.state = "HOLDING";
                             zs.holdStep = 0;
@@ -145,32 +146,32 @@ public class TempCsvGenerator {
                         break;
                     case "HOLDING":
                         zs.holdStep++;
-                        zs.temp = zs.spikeTargetTemp;
+                        zs.humidity = zs.spikeTargetHumidity;
                         if (zs.holdStep >= zs.holdDuration) {
                             zs.state = "OUT_OF_RANGE";
                         }
                         break;
                     case "OUT_OF_RANGE":
                         double towardProb = 0.8;
-                        boolean toward21;
+                        boolean towardNormal;
                         double delta;
-                        if (zs.temp < NORMAL_TEMP) {
-                            toward21 = rand.nextDouble() < towardProb;
-                            if (toward21) {
-                                delta = 0.05 + rand.nextDouble() * 0.05;
+                        if (zs.humidity < NORMAL_HUM) {
+                            towardNormal = rand.nextDouble() < towardProb;
+                            if (towardNormal) {
+                                delta = 0.05 + rand.nextDouble() * 0.005;
                             } else {
-                                delta = -(0.05 + rand.nextDouble() * 0.05);
+                                delta = -(0.05 + rand.nextDouble() * 0.005);
                             }
                         } else {
-                            toward21 = rand.nextDouble() < towardProb;
-                            if (toward21) {
-                                delta = -(0.05 + rand.nextDouble() * 0.05);
+                            towardNormal = rand.nextDouble() < towardProb;
+                            if (towardNormal) {
+                                delta = -(0.05 + rand.nextDouble() * 0.005);
                             } else {
-                                delta = 0.05 + rand.nextDouble() * 0.05;
+                                delta = 0.05 + rand.nextDouble() * 0.005;
                             }
                         }
-                        zs.temp += delta;
-                        if (zs.temp >= MIN_TEMP && zs.temp <= MAX_TEMP) {
+                        zs.humidity += delta;
+                        if (zs.humidity >= MIN_HUM && zs.humidity <= MAX_HUM) {
                             zs.state = "NORMAL";
                         }
                         break;
@@ -179,11 +180,11 @@ public class TempCsvGenerator {
             // 센서별 데이터 기록
             for (Sensor sensor : SENSORS) {
                 ZoneState zs = zoneStates.get(sensor.zoneId);
-                double sensorTemp = zs.temp + (rand.nextDouble() * 2 - 1) * SENSOR_NOISE;
+                    double sensorHumidity = zs.humidity + (rand.nextDouble() * 2 - 1) * SENSOR_NOISE;
                 // 0.25도 단위로 반올림
-                double roundedTemp = Math.round(sensorTemp / 0.25) * 0.25;
-                String line = String.format("%s,temperature,%s,°C,%.2f\n",
-                        now.plusSeconds(i).format(FORMATTER), sensor.sensorId, roundedTemp);
+                double roundedHumidity = Math.round(sensorHumidity / 0.25) * 0.25;
+                String line = String.format("%s,humidity,%s,%%RH,%.2f\n",
+                        now.plusSeconds(i).format(FORMATTER), sensor.sensorId, roundedHumidity);
                 writers.get(sensor.sensorId).write(line);
             }
         }
