@@ -89,7 +89,7 @@ public static void main(String[] args) throws IOException {
     Map<String, FileWriter> writers = new HashMap<>();
     for (Sensor sensor : SENSORS) {
         writers.put(sensor.sensorId, new FileWriter(dataDir + "/" + sensor.sensorId + ".csv"));
-        writers.get(sensor.sensorId).write("timestamp,sensor_type,sensor_id,unit,val,state\n");
+        writers.get(sensor.sensorId).write("timestamp,sensor_type,sensor_id,unit,val\n");
     }
 
     LocalDateTime now = LocalDateTime.of(2025, 7, 15, 9, 32, 0);
@@ -162,8 +162,8 @@ public static void main(String[] args) throws IOException {
             if (zs.state == "NORMAL" && sensorEsd >= MAX_ESD) {
                 sensorEsd = NORMAL_ESD + NORMAL_RANGE;
             }
-            String line = String.format("%s,esd,%s,V,%d,%s\n",
-                    now.plusSeconds(i).format(FORMATTER), sensor.sensorId, sensorEsd, zs.state);
+            String line = String.format("%s,esd,%s,V,%d\n",
+                    now.plusSeconds(i).format(FORMATTER), sensor.sensorId, sensorEsd);
             writers.get(sensor.sensorId).write(line);
         }
     }
