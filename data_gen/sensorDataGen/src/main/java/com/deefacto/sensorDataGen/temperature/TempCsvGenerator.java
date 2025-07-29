@@ -46,10 +46,12 @@ public class TempCsvGenerator {
     private static final double OUT_MAX = NORMAL_TEMP + OUT_RANGE;
     private static final double DELTA = 0.1; // 정상 상태 변화폭
     private static final double OUT_PROB = 0.01; // 1% 확률로 이상치 발생
-    private static final int SECONDS = 3600; // 1시간치 데이터
+    private static final int DAYS = 1;  // 1일치 데이터
+    private static final int SECONDS = 86400 * DAYS; // 1일치 데이터
     private static final double SENSOR_NOISE = 0.25; // 센서별 미세 노이즈 (±0.25°C)
 
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
+    private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH");
 
     public static void main(String[] args) throws IOException {
         // zone 목록 추출 (A, B, C)
@@ -87,18 +89,37 @@ public class TempCsvGenerator {
             zoneStates.put(zone, new ZoneState(t0));
         }
 
-        // 센서별 파일 준비 및 헤더 작성
+        // 데이터 디렉토리 준비
         String dataDir = "Data/temperature";
         java.io.File dir = new java.io.File(dataDir);
         if (!dir.exists()) dir.mkdirs();
-        Map<String, FileWriter> writers = new HashMap<>();
-        for (Sensor sensor : SENSORS) {
-            writers.put(sensor.sensorId, new FileWriter(dataDir + "/" + sensor.sensorId + ".csv"));
-            writers.get(sensor.sensorId).write("timestamp,sensor_type,sensor_id,unit,val\n");
-        }
 
-        LocalDateTime now = LocalDateTime.of(2025, 7, 15, 9, 32, 0);
+        LocalDateTime now = LocalDateTime.of(2025, 7, 29, 0, 0, 0);
+        Map<String, FileWriter> writers = new HashMap<>();
+        int currentHour = -1;
+        
         for (int i = 0; i < SECONDS; i++) {
+            LocalDateTime currentTime = now.plusSeconds(i);
+            int hour = currentTime.getHour();
+            
+            // 새로운 시간대가 시작되면 파일을 새로 생성
+            if (hour != currentHour) {
+                // 기존 파일들 닫기
+                for (FileWriter w : writers.values()) {
+                    w.close();
+                }
+                writers.clear();
+                
+                // 새로운 시간대 파일들 생성
+                String hourSuffix = String.format("%02d:00~%02d:00", hour, hour + 1);
+                for (Sensor sensor : SENSORS) {
+                    String fileName = sensor.sensorId + "_" + hourSuffix + ".csv";
+                    writers.put(sensor.sensorId, new FileWriter(dataDir + "/" + fileName));
+                    writers.get(sensor.sensorId).write("timestamp,sensor_type,sensor_id,unit,val\n");
+                }
+                currentHour = hour;
+            }
+            
             // zone별 온도/상태 업데이트
             for (String zone : zones) {
                 ZoneState zs = zoneStates.get(zone);
@@ -195,11 +216,11 @@ public class TempCsvGenerator {
                 // 0.25도 단위로 반올림
                 double roundedTemp = Math.round(sensorTemp / 0.25) * 0.25;
                 String line = String.format("%s,temperature,%s,°C,%.2f\n",
-                        now.plusSeconds(i).format(FORMATTER), sensor.sensorId, roundedTemp);
+                        currentTime.format(FORMATTER), sensor.sensorId, roundedTemp);
                 writers.get(sensor.sensorId).write(line);
             }
         }
-        // 파일 닫기
+        // 마지막 파일들 닫기
         for (FileWriter w : writers.values()) w.close();
     }
 }
