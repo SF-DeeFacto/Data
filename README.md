@@ -16,4 +16,10 @@ no
     - 나오는 메뉴에서 partition by values를 선택한다.
     - select field 에서 sensor_id를 선택하면 같은 센서끼리 그래프를 그려준다.
 
-    
+
+8/5
+- data_generator 사용법
+
+  1. /data_generator 디렉토리에 venv 생성 및 실행
+  2. requirements.txt 설치
+  3. python app.py 로 app 실행
