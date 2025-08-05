@@ -2,3 +2,5 @@ data_gen/.DS_Store
 data_gen/Data/.DS_Store
 .DS_Store
 data_gen/.vscode/settings.json
+.env
+node_modules/
