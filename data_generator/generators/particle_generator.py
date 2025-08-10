@@ -4,6 +4,8 @@ import mysql.connector
 from datetime import datetime
 from config.sensor_config import LPM_SENSORS
 from config.db_config import DB_CONFIG
+from opensearchpy import helpers
+from config.opensearch_config import get_os_client, ensure_index_for_type, to_iso_z
 
 def run_particle_simulation():
     NORMAL_1 = 850
@@ -21,6 +23,9 @@ def run_particle_simulation():
 
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor()
+
+    os_client = get_os_client()
+    index_name = ensure_index_for_type(os_client, "particle")
 
     sensor_states = {
         sensor.sensor_id: {
@@ -40,10 +45,12 @@ def run_particle_simulation():
     }
 
     data_buffer = []
+    os_actions = []
 
     try:
         while True:
             now = datetime.utcnow()
+            ts_iso = to_iso_z(now)
 
             for state in sensor_states.values():
                 if state["state"] == "NORMAL":
@@ -78,11 +85,11 @@ def run_particle_simulation():
                     t = state["spike_step"] / state["spike_duration"]
                     factor = 1 - pow(2.71828, -3 * t)
                     norm = 1 - pow(2.71828, -3)
-                    start1, start3, start5 = state["spike_start"]
-                    target1, target3, target5 = state["spike_target"]
-                    state["p1"] = int(start1 + (target1 - start1) * (factor / norm))
-                    state["p3"] = int(start3 + (target3 - start3) * (factor / norm))
-                    state["p5"] = int(start5 + (target5 - start5) * (factor / norm))
+                    s1, s3, s5 = state["spike_start"]
+                    tg1, tg3, tg5 = state["spike_target"]
+                    state["p1"] = int(s1 + (tg1 - s1) * (factor / norm))
+                    state["p3"] = int(s3 + (tg3 - s3) * (factor / norm))
+                    state["p5"] = int(s5 + (tg5 - s5) * (factor / norm))
                     if state["spike_step"] >= state["spike_duration"]:
                         state["state"] = "HOLDING"
                         state["hold_step"] = 0
@@ -114,9 +121,22 @@ def run_particle_simulation():
                 noisy1 = state["p1"] + random.randint(-SENSOR_NOISE, SENSOR_NOISE)
                 noisy3 = state["p3"] + random.randint(-SENSOR_NOISE, SENSOR_NOISE)
                 noisy5 = state["p5"] + random.randint(-SENSOR_NOISE, SENSOR_NOISE)
-                data_buffer.append((
-                    now, "particle", sensor.sensor_id, state["zone_id"], "PPM", noisy1, noisy3, noisy5
-                ))
+
+                data_buffer.append((now, "particle", sensor.sensor_id, state["zone_id"], "PPM", int(noisy1), int(noisy3), int(noisy5)))
+
+                os_actions.append({
+                    "_index": index_name,
+                    "_source": {
+                        "sensor_id": str(sensor.sensor_id),
+                        "zone_id": str(state["zone_id"]),
+                        "timestamp": ts_iso,
+                        "sensor_type": "particle",
+                        "unit": "PPM",
+                        "val_0_1um": int(noisy1),
+                        "val_0_3um": int(noisy3),
+                        "val_0_5um": int(noisy5),
+                    }
+                })
 
             if len(data_buffer) >= len(LPM_SENSORS) * 5:
                 cursor.executemany("""
@@ -125,13 +145,44 @@ def run_particle_simulation():
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, data_buffer)
                 conn.commit()
-                print(f"[{now}] PARTICLE 데이터 {len(data_buffer)}개 삽입 완료")
+                print(f"[{now}] PARTICLE MySQL inserted {len(data_buffer)} rows")
                 data_buffer.clear()
+
+                try:
+                    helpers.bulk(os_client, os_actions, raise_on_error=False)
+                    print(f"[{now}] PARTICLE OS indexed {len(os_actions)} docs")
+                except Exception as e:
+                    print(f"[OS] bulk error: {e}")
+                finally:
+                    os_actions.clear()
 
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("🛑 PARTICLE 시뮬레이터 종료됨.")
+        print("PARTICLE 시뮬레이터 종료됨.")
     finally:
+        if data_buffer:
+            try:
+                cursor.executemany("""
+                    INSERT INTO lpm_data
+                    (timestamp, sensor_type, sensor_id, zone_id, unit, val_0_1um, val_0_3um, val_0_5um)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, data_buffer)
+                conn.commit()
+                print(f"Final PARTICLE MySQL flush: {len(data_buffer)} rows")
+            except Exception as e:
+                conn.rollback()
+                print(f"Final PARTICLE MySQL error: {e}")
+
+        if os_actions:
+            try:
+                helpers.bulk(os_client, os_actions, raise_on_error=False)
+                print(f"Final PARTICLE OS flush: {len(os_actions)} docs")
+            except Exception as e:
+                print(f"Final PARTICLE OS error: {e}")
+
         cursor.close()
         conn.close()
+
+if __name__ == "__main__":
+    run_particle_simulation()

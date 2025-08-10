@@ -4,9 +4,11 @@ import mysql.connector
 from datetime import datetime
 from config.sensor_config import TEMP_SENSORS
 from config.db_config import DB_CONFIG
+# Openserach 설정 import
+from opensearchpy import helpers
+from config.opensearch_config import get_os_client, ensure_index_for_type, get_index_for_type, to_iso_z
 
 def run_temp_simulation():
-    # 온도 시뮬레이션 파라미터
     NORMAL_TEMP = 21.0
     NORMAL_RANGE = 1.0
     OUT_RANGE = 3.0
@@ -21,6 +23,11 @@ def run_temp_simulation():
     # DB 연결
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor()
+
+    # OpenSearch 준비
+    os_client = get_os_client()
+    sensor_type = "temp"
+    index_name = ensure_index_for_type(os_client, sensor_type)
 
     # zone 상태 초기화
     zone_states = {
@@ -38,12 +45,13 @@ def run_temp_simulation():
     }
 
     data_buffer = []
+    os_actions = []
 
     try:
         while True:
             now = datetime.utcnow()
 
-            # zone별 상태 업데이트
+            # zone 상태 업데이트
             for state in zone_states.values():
                 if state["state"] == "NORMAL":
                     if random.random() < OUT_PROB:
@@ -88,31 +96,75 @@ def run_temp_simulation():
                     if MIN_TEMP <= state["temp"] <= MAX_TEMP:
                         state["state"] = "NORMAL"
 
-            # 센서별 데이터 생성 → 버퍼에 저장
+            # mysql, openSearch 각 버퍼에 저장
+            ts_iso = to_iso_z(now)
             for sensor in TEMP_SENSORS:
                 zone_temp = zone_states[sensor.zone_id]["temp"]
                 noisy_temp = zone_temp + (random.random() * 2 - 1) * SENSOR_NOISE
                 rounded_temp = round(noisy_temp / 0.25) * 0.25
 
-                data_buffer.append((
-                    now, "temp", sensor.sensor_id, sensor.zone_id, "°C", rounded_temp
-                ))
+                # MySQL
+                data_buffer.append((now, "temp", sensor.sensor_id, sensor.zone_id, "°C", rounded_temp))
 
-            # 5초마다 insert
+                # OpenSearch
+                os_actions.append({
+                    "_index": index_name,
+                    "_source": {
+                        "sensor_id": str(sensor.sensor_id),
+                        "zone_id": str(sensor.zone_id),
+                        "timestamp": ts_iso,
+                        "sensor_type": sensor_type,
+                        "unit": "°C",
+                        "val": float(rounded_temp),
+                    }
+                })
+
+            # 5초마다 flush
             if len(data_buffer) >= len(TEMP_SENSORS) * 5:
+                # MySQL
                 cursor.executemany("""
-                    INSERT INTO temp_data
-                    (timestamp, sensor_type, sensor_id, zone_id, unit, val)
+                    INSERT INTO temp_data (timestamp, sensor_type, sensor_id, zone_id, unit, val)
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, data_buffer)
                 conn.commit()
-                print(f"[{now}] TEMP 센서 데이터 {len(data_buffer)}개 삽입 완료")
+                print(f"[{now}] MySQL inserted {len(data_buffer)} rows")
                 data_buffer.clear()
+
+                # OpenSearch
+                try:
+                    helpers.bulk(os_client, os_actions, raise_on_error=False)
+                    print(f"[{now}] OpenSearch indexed {len(os_actions)} docs")
+                except Exception as e:
+                    print(f"[OS] bulk error: {e}")
+                finally:
+                    os_actions.clear()
 
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("🛑 TEMP 시뮬레이터 종료됨.")
+        print("TEMP 시뮬레이터 종료됨.")
     finally:
+        if data_buffer:
+            try:
+                cursor.executemany("""
+                    INSERT INTO temp_data (timestamp, sensor_type, sensor_id, zone_id, unit, val)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, data_buffer)
+                conn.commit()
+                print(f"Final MySQL flush: {len(data_buffer)} rows")
+            except Exception as e:
+                conn.rollback()
+                print(f"Final MySQL error: {e}")
+
+        if os_actions:
+            try:
+                helpers.bulk(os_client, os_actions, raise_on_error=False)
+                print(f"Final OpenSearch flush: {len(os_actions)} docs")
+            except Exception as e:
+                print(f"Final OS error: {e}")
+
         cursor.close()
         conn.close()
+
+if __name__ == "__main__":
+    run_temp_simulation()

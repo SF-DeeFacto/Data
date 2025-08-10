@@ -4,6 +4,8 @@ import mysql.connector
 from datetime import datetime
 from config.sensor_config import ESD_SENSORS
 from config.db_config import DB_CONFIG
+from opensearchpy import helpers
+from config.opensearch_config import get_os_client, ensure_index_for_type, get_index_for_type, to_iso_z
 
 def run_esd_simulation():
     NORMAL_ESD = 50
@@ -16,6 +18,10 @@ def run_esd_simulation():
 
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor()
+
+    os_client = get_os_client()
+    sensor_type = "esd"
+    index_name = ensure_index_for_type(os_client, sensor_type)
 
     sensor_states = {
         sensor.sensor_id: {
@@ -31,10 +37,12 @@ def run_esd_simulation():
     }
 
     data_buffer = []
+    os_actions = []
 
     try:
         while True:
             now = datetime.utcnow()
+            ts_iso = to_iso_z(now)
 
             for state in sensor_states.values():
                 if state["state"] == "NORMAL":
@@ -75,9 +83,19 @@ def run_esd_simulation():
                 elif state["state"] == "NORMAL" and noisy >= MAX_ESD:
                     noisy = NORMAL_ESD + NORMAL_RANGE
 
-                data_buffer.append((
-                    now, "esd", sensor.sensor_id, state["zone_id"], "V", noisy
-                ))
+                data_buffer.append((now, "esd", sensor.sensor_id, state["zone_id"], "V", int(noisy)))
+
+                os_actions.append({
+                    "_index": index_name,
+                    "_source": {
+                        "sensor_id": str(sensor.sensor_id),
+                        "zone_id": str(state["zone_id"]),
+                        "timestamp": ts_iso,
+                        "sensor_type": sensor_type,
+                        "unit": "V",
+                        "val": int(noisy),
+                    }
+                })
 
             if len(data_buffer) >= len(ESD_SENSORS) * 5:
                 cursor.executemany("""
@@ -86,13 +104,44 @@ def run_esd_simulation():
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, data_buffer)
                 conn.commit()
-                print(f"[{now}] ESD 데이터 {len(data_buffer)}개 삽입 완료")
+                print(f"[{now}] ▶ ESD MySQL inserted {len(data_buffer)} rows")
                 data_buffer.clear()
+
+                try:
+                    helpers.bulk(os_client, os_actions, raise_on_error=False)
+                    print(f"[{now}] ▶ ESD OS indexed {len(os_actions)} docs")
+                except Exception as e:
+                    print(f"[OS] bulk error: {e}")
+                finally:
+                    os_actions.clear()
 
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("🛑 ESD 시뮬레이터 종료됨.")
+        print("ESD 시뮬레이터 종료됨.")
     finally:
+        if data_buffer:
+            try:
+                cursor.executemany("""
+                    INSERT INTO esd_data
+                    (timestamp, sensor_type, sensor_id, zone_id, unit, val)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, data_buffer)
+                conn.commit()
+                print(f"Final ESD MySQL flush: {len(data_buffer)} rows")
+            except Exception as e:
+                conn.rollback()
+                print(f"Final ESD MySQL error: {e}")
+
+        if os_actions:
+            try:
+                helpers.bulk(os_client, os_actions, raise_on_error=False)
+                print(f"Final ESD OS flush: {len(os_actions)} docs")
+            except Exception as e:
+                print(f"Final ESD OS error: {e}")
+
         cursor.close()
         conn.close()
+
+if __name__ == "__main__":
+    run_esd_simulation()
