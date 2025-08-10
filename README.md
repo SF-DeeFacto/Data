@@ -54,7 +54,3 @@ http://localhost:5601/
 | windDir     | sensor_wind_stream         | wind_data      | 풍향 센서 데이터 (deg) |
 | esd         | sensor_esd_stream          | esd_data       | 정전기(ESD) 센서 데이터 (V) |
 | particle    | sensor_particle_stream     | lpm_data       | 미세먼지(PM) 센서 데이터 (0.1/0.3/0.5um, PPM) |
-
-
-
-
