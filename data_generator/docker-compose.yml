@@ -1,0 +1,55 @@
+services:
+  opensearch-node:
+    # 이미지 풀 실패하면 아래 줄을 주석처리하고 그 아래 GHCR 줄의 주석을 해제하세요.
+    image: opensearchproject/opensearch:2.13.0
+    # image: ghcr.io/opensearch-project/opensearch:2.13.0
+    container_name: opensearch-node
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=StrongPassword22!
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"   # HTTPS (보안 플러그인 켜짐)
+      - "9600:9600"
+    networks:
+      - opensearch-net
+    healthcheck:
+      test: ["CMD", "bash", "-c", "curl -k -u admin:StrongPassword22! https://localhost:9200 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  opensearch-dashboards:
+    # 이미지 풀 실패하면 아래 줄 주석처리하고 GHCR 줄 해제
+    image: opensearchproject/opensearch-dashboards:2.13.0
+    # image: ghcr.io/opensearch-project/opensearch-dashboards:2.13.0
+    container_name: opensearch-dashboards
+    ports:
+      - "5601:5601"
+    environment:
+      # 반드시 따옴표로 감싼 JSON 문자열이어야 함
+      - OPENSEARCH_HOSTS=["https://opensearch-node:9200"]
+      - OPENSEARCH_USERNAME=admin
+      - OPENSEARCH_PASSWORD=StrongPassword22!
+      # 자기서명 인증서 검증 비활성화(개발용)
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+    networks:
+      - opensearch-net
+    depends_on:
+      opensearch-node:
+        condition: service_healthy
+
+networks:
+  opensearch-net:
+
+volumes:
+  opensearch-data:
