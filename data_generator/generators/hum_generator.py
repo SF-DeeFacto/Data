@@ -4,6 +4,8 @@ import mysql.connector
 from datetime import datetime
 from config.sensor_config import HUM_SENSORS
 from config.db_config import DB_CONFIG
+from opensearchpy import helpers
+from config.opensearch_config import get_os_client, ensure_index_for_type, get_index_for_type, to_iso_z
 
 def run_humidity_simulation():
     NORMAL_HUM = 45.0
@@ -20,6 +22,10 @@ def run_humidity_simulation():
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor()
 
+    os_client = get_os_client()
+    sensor_type = "humidity"
+    index_name = ensure_index_for_type(os_client, sensor_type)
+
     zone_states = {
         sensor.zone_id: {
             "hum": NORMAL_HUM + (random.random() * 2 - 1) * NORMAL_RANGE,
@@ -35,10 +41,12 @@ def run_humidity_simulation():
     }
 
     data_buffer = []
+    os_actions = []
 
     try:
         while True:
             now = datetime.utcnow()
+            ts_iso = to_iso_z(now)
 
             for state in zone_states.values():
                 if state["state"] == "NORMAL":
@@ -89,9 +97,19 @@ def run_humidity_simulation():
                 noisy_hum = zone_hum + (random.random() * 2 - 1) * SENSOR_NOISE
                 rounded_hum = round(noisy_hum / 0.25) * 0.25
 
-                data_buffer.append((
-                    now, "humidity", sensor.sensor_id, sensor.zone_id, "%RH", rounded_hum
-                ))
+                data_buffer.append((now, "humidity", sensor.sensor_id, sensor.zone_id, "%RH", rounded_hum))
+
+                os_actions.append({
+                    "_index": index_name,
+                    "_source": {
+                        "sensor_id": str(sensor.sensor_id),
+                        "zone_id": str(sensor.zone_id),
+                        "timestamp": ts_iso,
+                        "sensor_type": sensor_type,
+                        "unit": "%RH",
+                        "val": float(rounded_hum),
+                    }
+                })
 
             if len(data_buffer) >= len(HUM_SENSORS) * 5:
                 cursor.executemany("""
@@ -100,13 +118,44 @@ def run_humidity_simulation():
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, data_buffer)
                 conn.commit()
-                print(f"[{now}] ▶ HUMIDITY 데이터 {len(data_buffer)}개 삽입 완료")
+                print(f"[{now}] ▶ HUMIDITY MySQL inserted {len(data_buffer)} rows")
                 data_buffer.clear()
+
+                try:
+                    helpers.bulk(os_client, os_actions, raise_on_error=False)
+                    print(f"[{now}] ▶ HUMIDITY OS indexed {len(os_actions)} docs")
+                except Exception as e:
+                    print(f"[OS] bulk error: {e}")
+                finally:
+                    os_actions.clear()
 
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("🛑 HUMIDITY 시뮬레이터 종료됨.")
+        print("HUMIDITY 시뮬레이터 종료됨.")
     finally:
+        if data_buffer:
+            try:
+                cursor.executemany("""
+                    INSERT INTO hum_data
+                    (timestamp, sensor_type, sensor_id, zone_id, unit, val)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, data_buffer)
+                conn.commit()
+                print(f"Final HUMIDITY MySQL flush: {len(data_buffer)} rows")
+            except Exception as e:
+                conn.rollback()
+                print(f"Final HUMIDITY MySQL error: {e}")
+
+        if os_actions:
+            try:
+                helpers.bulk(os_client, os_actions, raise_on_error=False)
+                print(f"Final HUMIDITY OS flush: {len(os_actions)} docs")
+            except Exception as e:
+                print(f"Final HUMIDITY OS error: {e}")
+
         cursor.close()
         conn.close()
+
+if __name__ == "__main__":
+    run_humidity_simulation()

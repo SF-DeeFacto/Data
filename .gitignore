@@ -4,3 +4,9 @@ data_gen/Data/.DS_Store
 data_gen/.vscode/settings.json
 .env
 node_modules/
+
+# python sensor data generator ignore config
+data_generator/config/db_config.py
+data_generator/config/opensearch_config.py
+data_generator/venv
+data_generator/.idea
